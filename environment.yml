@@ -1,7 +1,6 @@
 name: singularity-tutorial
 channels:
   - conda-forge
-  - bioconda
 dependencies:
   - biopython
   - ipython
