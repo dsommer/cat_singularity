@@ -5,6 +5,7 @@ USER root
 COPY . ${HOME}
 RUN mkdir /opt
 COPY singularity /opt
+RUN chmod 4775 /opt/singularity/libexec/singularity/bin/starter-suid
 RUN chown -R ${NB_UID} ${HOME}
 
 
