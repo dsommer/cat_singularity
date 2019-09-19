@@ -5,7 +5,6 @@ USER root
 COPY . ${HOME}
 RUN mkdir /opt
 COPY singularity /opt
-
 RUN chown -R ${NB_UID} ${HOME}
 
 
