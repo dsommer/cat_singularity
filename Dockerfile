@@ -1,4 +1,4 @@
-FROM jupyter/scipy-notebook:latest
+FROM jupyter/scipy-notebook:1386e2046833
 
 USER root
 RUN apt-get update && apt-get install -y squashfs-tools
