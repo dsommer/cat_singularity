@@ -1,0 +1,11 @@
+bootstrap: library
+From: ubuntu:18.04
+
+%post
+	apt-get -y update
+
+%labels
+	Author dsommer
+
+
+	
