@@ -17,8 +17,9 @@ RUN export VERSION=1.12 OS=linux ARCH=amd64 && \
 USER ${NB_USER}
 
 RUN echo 'export GOPATH=${HOME}/go' >> ~/.bashrc && \
-    echo 'export PATH=/usr/local/go/bin:${PATH}:${GOPATH}/bin' >> ~/.bashrc && \
-    source ~/.bashrc
+    echo 'export PATH=/usr/local/go/bin:${PATH}:${GOPATH}/bin' >> ~/.bashrc
+ENV GOPATH=${HOME}/go
+ENV PATH=/usr/local/go/bin:${PATH}:${GOPATH}/bin
 RUN export VERSION=3.4.0 && # adjust this as necessary \
     wget https://github.com/sylabs/singularity/releases/download/v${VERSION}/singularity-${VERSION}.tar.gz && \
     tar -xzf singularity-${VERSION}.tar.gz && \
