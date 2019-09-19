@@ -20,10 +20,12 @@ RUN echo 'export GOPATH=${HOME}/go' >> ~/.bashrc && \
     echo 'export PATH=/usr/local/go/bin:${PATH}:${GOPATH}/bin' >> ~/.bashrc
 ENV GOPATH=${HOME}/go
 ENV PATH=/usr/local/go/bin:${PATH}:${GOPATH}/bin
-RUN export VERSION=3.4.0 && # adjust this as necessary \
+RUN export VERSION=3.4.0 && \
     wget https://github.com/sylabs/singularity/releases/download/v${VERSION}/singularity-${VERSION}.tar.gz && \
     tar -xzf singularity-${VERSION}.tar.gz && \
-    cd singularity && \
-    ./mconfig && \
-    make -C ./builddir && \
-    sudo make -C ./builddir install
+    cd singularity
+RUN ./mconfig && \
+    make -C ./builddir
+USER root
+    make -C ./builddir install
+USER ${NB_USER}
