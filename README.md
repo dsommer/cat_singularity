@@ -5,5 +5,3 @@ singularity builds for cat
 
 
 A Binder-compatible repo with an `environment.yml` file.
-
-Access this Binder at the following URL:
