@@ -124,5 +124,11 @@ COPY jupyter_notebook_config.py /etc/jupyter/
 USER root
 RUN fix-permissions /etc/jupyter/
 
+
+## Copies your repo files into the Docker Container
+USER root
+COPY . ${HOME}
+RUN chown -R ${NB_USER} ${HOME}
+
 # Switch back to jovyan to avoid accidental container runs as root
 USER $NB_UID
