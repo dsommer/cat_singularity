@@ -1,8 +1,9 @@
 FROM jupyter/scipy-notebook:cf6258237ff9
 
 USER root
+RUN apt-get install -y aptitude
 
-RUN apt-get install -y \
+RUN aptitude install -y \
     build-essential \
     libssl-dev \
     uuid-dev \
