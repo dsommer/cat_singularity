@@ -8,7 +8,19 @@ RUN chown -R ${NB_UID} ${HOME}
 # install singularity
 RUN adduser ${NB_USER} sudo
 RUN echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-RUN apt-get update && apt-get install -y squashfs-tools libssl-dev uuid-dev uidmap
+RUN apt-get update && apt-get install -y \
+    uidmap \
+    build-essential \
+    libssl-dev \
+    uuid-dev \
+    libgpgme11-dev \
+    squashfs-tools \
+    libseccomp-dev \
+    wget \
+    pkg-config \
+    git \
+    cryptsetup-bin
+    
 RUN export VERSION=1.12 OS=linux ARCH=amd64 && \
     wget https://dl.google.com/go/go$VERSION.$OS-$ARCH.tar.gz && \
     tar -C /usr/local -xzvf go$VERSION.$OS-$ARCH.tar.gz && \
