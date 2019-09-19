@@ -1,0 +1,2710 @@
+# bash completion for singularity                          -*- shell-script -*-
+
+__singularity_debug()
+{
+    if [[ -n ${BASH_COMP_DEBUG_FILE} ]]; then
+        echo "$*" >> "${BASH_COMP_DEBUG_FILE}"
+    fi
+}
+
+# Homebrew on Macs have version 1.3 of bash-completion which doesn't include
+# _init_completion. This is a very minimal version of that function.
+__singularity_init_completion()
+{
+    COMPREPLY=()
+    _get_comp_words_by_ref "$@" cur prev words cword
+}
+
+__singularity_index_of_word()
+{
+    local w word=$1
+    shift
+    index=0
+    for w in "$@"; do
+        [[ $w = "$word" ]] && return
+        index=$((index+1))
+    done
+    index=-1
+}
+
+__singularity_contains_word()
+{
+    local w word=$1; shift
+    for w in "$@"; do
+        [[ $w = "$word" ]] && return
+    done
+    return 1
+}
+
+__singularity_handle_reply()
+{
+    __singularity_debug "${FUNCNAME[0]}"
+    case $cur in
+        -*)
+            if [[ $(type -t compopt) = "builtin" ]]; then
+                compopt -o nospace
+            fi
+            local allflags
+            if [ ${#must_have_one_flag[@]} -ne 0 ]; then
+                allflags=("${must_have_one_flag[@]}")
+            else
+                allflags=("${flags[*]} ${two_word_flags[*]}")
+            fi
+            COMPREPLY=( $(compgen -W "${allflags[*]}" -- "$cur") )
+            if [[ $(type -t compopt) = "builtin" ]]; then
+                [[ "${COMPREPLY[0]}" == *= ]] || compopt +o nospace
+            fi
+
+            # complete after --flag=abc
+            if [[ $cur == *=* ]]; then
+                if [[ $(type -t compopt) = "builtin" ]]; then
+                    compopt +o nospace
+                fi
+
+                local index flag
+                flag="${cur%=*}"
+                __singularity_index_of_word "${flag}" "${flags_with_completion[@]}"
+                COMPREPLY=()
+                if [[ ${index} -ge 0 ]]; then
+                    PREFIX=""
+                    cur="${cur#*=}"
+                    ${flags_completion[${index}]}
+                    if [ -n "${ZSH_VERSION}" ]; then
+                        # zsh completion needs --flag= prefix
+                        eval "COMPREPLY=( \"\${COMPREPLY[@]/#/${flag}=}\" )"
+                    fi
+                fi
+            fi
+            return 0;
+            ;;
+    esac
+
+    # check if we are handling a flag with special work handling
+    local index
+    __singularity_index_of_word "${prev}" "${flags_with_completion[@]}"
+    if [[ ${index} -ge 0 ]]; then
+        ${flags_completion[${index}]}
+        return
+    fi
+
+    # we are parsing a flag and don't have a special handler, no completion
+    if [[ ${cur} != "${words[cword]}" ]]; then
+        return
+    fi
+
+    local completions
+    completions=("${commands[@]}")
+    if [[ ${#must_have_one_noun[@]} -ne 0 ]]; then
+        completions=("${must_have_one_noun[@]}")
+    fi
+    if [[ ${#must_have_one_flag[@]} -ne 0 ]]; then
+        completions+=("${must_have_one_flag[@]}")
+    fi
+    COMPREPLY=( $(compgen -W "${completions[*]}" -- "$cur") )
+
+    if [[ ${#COMPREPLY[@]} -eq 0 && ${#noun_aliases[@]} -gt 0 && ${#must_have_one_noun[@]} -ne 0 ]]; then
+        COMPREPLY=( $(compgen -W "${noun_aliases[*]}" -- "$cur") )
+    fi
+
+    if [[ ${#COMPREPLY[@]} -eq 0 ]]; then
+		if declare -F __singularity_custom_func >/dev/null; then
+			# try command name qualified custom func
+			__singularity_custom_func
+		else
+			# otherwise fall back to unqualified for compatibility
+			declare -F __custom_func >/dev/null && __custom_func
+		fi
+    fi
+
+    # available in bash-completion >= 2, not always present on macOS
+    if declare -F __ltrim_colon_completions >/dev/null; then
+        __ltrim_colon_completions "$cur"
+    fi
+
+    # If there is only 1 completion and it is a flag with an = it will be completed
+    # but we don't want a space after the =
+    if [[ "${#COMPREPLY[@]}" -eq "1" ]] && [[ $(type -t compopt) = "builtin" ]] && [[ "${COMPREPLY[0]}" == --*= ]]; then
+       compopt -o nospace
+    fi
+}
+
+# The arguments should be in the form "ext1|ext2|extn"
+__singularity_handle_filename_extension_flag()
+{
+    local ext="$1"
+    _filedir "@(${ext})"
+}
+
+__singularity_handle_subdirs_in_dir_flag()
+{
+    local dir="$1"
+    pushd "${dir}" >/dev/null 2>&1 && _filedir -d && popd >/dev/null 2>&1
+}
+
+__singularity_handle_flag()
+{
+    __singularity_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+
+    # if a command required a flag, and we found it, unset must_have_one_flag()
+    local flagname=${words[c]}
+    local flagvalue
+    # if the word contained an =
+    if [[ ${words[c]} == *"="* ]]; then
+        flagvalue=${flagname#*=} # take in as flagvalue after the =
+        flagname=${flagname%=*} # strip everything after the =
+        flagname="${flagname}=" # but put the = back
+    fi
+    __singularity_debug "${FUNCNAME[0]}: looking for ${flagname}"
+    if __singularity_contains_word "${flagname}" "${must_have_one_flag[@]}"; then
+        must_have_one_flag=()
+    fi
+
+    # if you set a flag which only applies to this command, don't show subcommands
+    if __singularity_contains_word "${flagname}" "${local_nonpersistent_flags[@]}"; then
+      commands=()
+    fi
+
+    # keep flag value with flagname as flaghash
+    # flaghash variable is an associative array which is only supported in bash > 3.
+    if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+        if [ -n "${flagvalue}" ] ; then
+            flaghash[${flagname}]=${flagvalue}
+        elif [ -n "${words[ $((c+1)) ]}" ] ; then
+            flaghash[${flagname}]=${words[ $((c+1)) ]}
+        else
+            flaghash[${flagname}]="true" # pad "true" for bool flag
+        fi
+    fi
+
+    # skip the argument to a two word flag
+    if [[ ${words[c]} != *"="* ]] && __singularity_contains_word "${words[c]}" "${two_word_flags[@]}"; then
+			  __singularity_debug "${FUNCNAME[0]}: found a flag ${words[c]}, skip the next argument"
+        c=$((c+1))
+        # if we are looking for a flags value, don't show commands
+        if [[ $c -eq $cword ]]; then
+            commands=()
+        fi
+    fi
+
+    c=$((c+1))
+
+}
+
+__singularity_handle_noun()
+{
+    __singularity_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+
+    if __singularity_contains_word "${words[c]}" "${must_have_one_noun[@]}"; then
+        must_have_one_noun=()
+    elif __singularity_contains_word "${words[c]}" "${noun_aliases[@]}"; then
+        must_have_one_noun=()
+    fi
+
+    nouns+=("${words[c]}")
+    c=$((c+1))
+}
+
+__singularity_handle_command()
+{
+    __singularity_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+
+    local next_command
+    if [[ -n ${last_command} ]]; then
+        next_command="_${last_command}_${words[c]//:/__}"
+    else
+        if [[ $c -eq 0 ]]; then
+            next_command="_singularity_root_command"
+        else
+            next_command="_${words[c]//:/__}"
+        fi
+    fi
+    c=$((c+1))
+    __singularity_debug "${FUNCNAME[0]}: looking for ${next_command}"
+    declare -F "$next_command" >/dev/null && $next_command
+}
+
+__singularity_handle_word()
+{
+    if [[ $c -ge $cword ]]; then
+        __singularity_handle_reply
+        return
+    fi
+    __singularity_debug "${FUNCNAME[0]}: c is $c words[c] is ${words[c]}"
+    if [[ "${words[c]}" == -* ]]; then
+        __singularity_handle_flag
+    elif __singularity_contains_word "${words[c]}" "${commands[@]}"; then
+        __singularity_handle_command
+    elif [[ $c -eq 0 ]]; then
+        __singularity_handle_command
+    elif __singularity_contains_word "${words[c]}" "${command_aliases[@]}"; then
+        # aliashash variable is an associative array which is only supported in bash > 3.
+        if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+            words[c]=${aliashash[${words[c]}]}
+            __singularity_handle_command
+        else
+            __singularity_handle_noun
+        fi
+    else
+        __singularity_handle_noun
+    fi
+    __singularity_handle_word
+}
+
+_singularity_build()
+{
+    last_command="singularity_build"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--builder=")
+    two_word_flags+=("--builder")
+    local_nonpersistent_flags+=("--builder=")
+    flags+=("--detached")
+    flags+=("-d")
+    local_nonpersistent_flags+=("--detached")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--fakeroot")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--fakeroot")
+    flags+=("--force")
+    flags+=("-F")
+    local_nonpersistent_flags+=("--force")
+    flags+=("--json")
+    local_nonpersistent_flags+=("--json")
+    flags+=("--library=")
+    two_word_flags+=("--library")
+    local_nonpersistent_flags+=("--library=")
+    flags+=("--no-cleanup")
+    local_nonpersistent_flags+=("--no-cleanup")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+    flags+=("--notest")
+    flags+=("-T")
+    local_nonpersistent_flags+=("--notest")
+    flags+=("--remote")
+    flags+=("-r")
+    local_nonpersistent_flags+=("--remote")
+    flags+=("--sandbox")
+    flags+=("-s")
+    local_nonpersistent_flags+=("--sandbox")
+    flags+=("--section=")
+    two_word_flags+=("--section")
+    local_nonpersistent_flags+=("--section=")
+    flags+=("--tmpdir=")
+    two_word_flags+=("--tmpdir")
+    local_nonpersistent_flags+=("--tmpdir=")
+    flags+=("--update")
+    flags+=("-u")
+    local_nonpersistent_flags+=("--update")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_cache_clean()
+{
+    last_command="singularity_cache_clean"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--all")
+    flags+=("-a")
+    local_nonpersistent_flags+=("--all")
+    flags+=("--name=")
+    two_word_flags+=("--name")
+    two_word_flags+=("-N")
+    local_nonpersistent_flags+=("--name=")
+    flags+=("--type=")
+    two_word_flags+=("--type")
+    two_word_flags+=("-T")
+    local_nonpersistent_flags+=("--type=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_cache_list()
+{
+    last_command="singularity_cache_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--all")
+    flags+=("-a")
+    local_nonpersistent_flags+=("--all")
+    flags+=("--summary")
+    flags+=("-s")
+    local_nonpersistent_flags+=("--summary")
+    flags+=("--type=")
+    two_word_flags+=("--type")
+    two_word_flags+=("-T")
+    local_nonpersistent_flags+=("--type=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_cache()
+{
+    last_command="singularity_cache"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("clean")
+    commands+=("list")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_capability_add()
+{
+    last_command="singularity_capability_add"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--group=")
+    two_word_flags+=("--group")
+    two_word_flags+=("-g")
+    local_nonpersistent_flags+=("--group=")
+    flags+=("--user=")
+    two_word_flags+=("--user")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--user=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_capability_avail()
+{
+    last_command="singularity_capability_avail"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_capability_drop()
+{
+    last_command="singularity_capability_drop"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--group=")
+    two_word_flags+=("--group")
+    two_word_flags+=("-g")
+    local_nonpersistent_flags+=("--group=")
+    flags+=("--user=")
+    two_word_flags+=("--user")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--user=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_capability_list()
+{
+    last_command="singularity_capability_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_capability()
+{
+    last_command="singularity_capability"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("add")
+    commands+=("avail")
+    commands+=("drop")
+    commands+=("list")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_exec()
+{
+    last_command="singularity_exec"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--add-caps=")
+    two_word_flags+=("--add-caps")
+    local_nonpersistent_flags+=("--add-caps=")
+    flags+=("--allow-setuid")
+    local_nonpersistent_flags+=("--allow-setuid")
+    flags+=("--app=")
+    two_word_flags+=("--app")
+    local_nonpersistent_flags+=("--app=")
+    flags+=("--apply-cgroups=")
+    two_word_flags+=("--apply-cgroups")
+    local_nonpersistent_flags+=("--apply-cgroups=")
+    flags+=("--bind=")
+    two_word_flags+=("--bind")
+    two_word_flags+=("-B")
+    local_nonpersistent_flags+=("--bind=")
+    flags+=("--cleanenv")
+    flags+=("-e")
+    local_nonpersistent_flags+=("--cleanenv")
+    flags+=("--contain")
+    flags+=("-c")
+    local_nonpersistent_flags+=("--contain")
+    flags+=("--containall")
+    flags+=("-C")
+    local_nonpersistent_flags+=("--containall")
+    flags+=("--dns=")
+    two_word_flags+=("--dns")
+    local_nonpersistent_flags+=("--dns=")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--drop-caps=")
+    two_word_flags+=("--drop-caps")
+    local_nonpersistent_flags+=("--drop-caps=")
+    flags+=("--fakeroot")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--fakeroot")
+    flags+=("--home=")
+    two_word_flags+=("--home")
+    two_word_flags+=("-H")
+    local_nonpersistent_flags+=("--home=")
+    flags+=("--hostname=")
+    two_word_flags+=("--hostname")
+    local_nonpersistent_flags+=("--hostname=")
+    flags+=("--ipc")
+    flags+=("-i")
+    local_nonpersistent_flags+=("--ipc")
+    flags+=("--keep-privs")
+    local_nonpersistent_flags+=("--keep-privs")
+    flags+=("--net")
+    flags+=("-n")
+    local_nonpersistent_flags+=("--net")
+    flags+=("--network=")
+    two_word_flags+=("--network")
+    local_nonpersistent_flags+=("--network=")
+    flags+=("--network-args=")
+    two_word_flags+=("--network-args")
+    local_nonpersistent_flags+=("--network-args=")
+    flags+=("--no-home")
+    local_nonpersistent_flags+=("--no-home")
+    flags+=("--no-init")
+    local_nonpersistent_flags+=("--no-init")
+    flags+=("--no-nv")
+    local_nonpersistent_flags+=("--no-nv")
+    flags+=("--no-privs")
+    local_nonpersistent_flags+=("--no-privs")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+    flags+=("--nv")
+    local_nonpersistent_flags+=("--nv")
+    flags+=("--overlay=")
+    two_word_flags+=("--overlay")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--overlay=")
+    flags+=("--pid")
+    flags+=("-p")
+    local_nonpersistent_flags+=("--pid")
+    flags+=("--pwd=")
+    two_word_flags+=("--pwd")
+    local_nonpersistent_flags+=("--pwd=")
+    flags+=("--scratch=")
+    two_word_flags+=("--scratch")
+    two_word_flags+=("-S")
+    local_nonpersistent_flags+=("--scratch=")
+    flags+=("--security=")
+    two_word_flags+=("--security")
+    local_nonpersistent_flags+=("--security=")
+    flags+=("--userns")
+    flags+=("-u")
+    local_nonpersistent_flags+=("--userns")
+    flags+=("--uts")
+    local_nonpersistent_flags+=("--uts")
+    flags+=("--vm")
+    local_nonpersistent_flags+=("--vm")
+    flags+=("--vm-cpu=")
+    two_word_flags+=("--vm-cpu")
+    local_nonpersistent_flags+=("--vm-cpu=")
+    flags+=("--vm-err")
+    local_nonpersistent_flags+=("--vm-err")
+    flags+=("--vm-ram=")
+    two_word_flags+=("--vm-ram")
+    local_nonpersistent_flags+=("--vm-ram=")
+    flags+=("--workdir=")
+    two_word_flags+=("--workdir")
+    two_word_flags+=("-W")
+    local_nonpersistent_flags+=("--workdir=")
+    flags+=("--writable")
+    flags+=("-w")
+    local_nonpersistent_flags+=("--writable")
+    flags+=("--writable-tmpfs")
+    local_nonpersistent_flags+=("--writable-tmpfs")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_inspect()
+{
+    last_command="singularity_inspect"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--app=")
+    two_word_flags+=("--app")
+    local_nonpersistent_flags+=("--app=")
+    flags+=("--deffile")
+    flags+=("-d")
+    local_nonpersistent_flags+=("--deffile")
+    flags+=("--environment")
+    flags+=("-e")
+    local_nonpersistent_flags+=("--environment")
+    flags+=("--helpfile")
+    flags+=("-H")
+    local_nonpersistent_flags+=("--helpfile")
+    flags+=("--json")
+    flags+=("-j")
+    local_nonpersistent_flags+=("--json")
+    flags+=("--labels")
+    flags+=("-l")
+    local_nonpersistent_flags+=("--labels")
+    flags+=("--list-apps")
+    local_nonpersistent_flags+=("--list-apps")
+    flags+=("--runscript")
+    flags+=("-r")
+    local_nonpersistent_flags+=("--runscript")
+    flags+=("--test")
+    flags+=("-t")
+    local_nonpersistent_flags+=("--test")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_instance_list()
+{
+    last_command="singularity_instance_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--json")
+    flags+=("-j")
+    local_nonpersistent_flags+=("--json")
+    flags+=("--user=")
+    two_word_flags+=("--user")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--user=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_instance_start()
+{
+    last_command="singularity_instance_start"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--add-caps=")
+    two_word_flags+=("--add-caps")
+    local_nonpersistent_flags+=("--add-caps=")
+    flags+=("--allow-setuid")
+    local_nonpersistent_flags+=("--allow-setuid")
+    flags+=("--apply-cgroups=")
+    two_word_flags+=("--apply-cgroups")
+    local_nonpersistent_flags+=("--apply-cgroups=")
+    flags+=("--bind=")
+    two_word_flags+=("--bind")
+    two_word_flags+=("-B")
+    local_nonpersistent_flags+=("--bind=")
+    flags+=("--boot")
+    local_nonpersistent_flags+=("--boot")
+    flags+=("--cleanenv")
+    flags+=("-e")
+    local_nonpersistent_flags+=("--cleanenv")
+    flags+=("--contain")
+    flags+=("-c")
+    local_nonpersistent_flags+=("--contain")
+    flags+=("--containall")
+    flags+=("-C")
+    local_nonpersistent_flags+=("--containall")
+    flags+=("--dns=")
+    two_word_flags+=("--dns")
+    local_nonpersistent_flags+=("--dns=")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--drop-caps=")
+    two_word_flags+=("--drop-caps")
+    local_nonpersistent_flags+=("--drop-caps=")
+    flags+=("--fakeroot")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--fakeroot")
+    flags+=("--home=")
+    two_word_flags+=("--home")
+    two_word_flags+=("-H")
+    local_nonpersistent_flags+=("--home=")
+    flags+=("--hostname=")
+    two_word_flags+=("--hostname")
+    local_nonpersistent_flags+=("--hostname=")
+    flags+=("--ipc")
+    flags+=("-i")
+    local_nonpersistent_flags+=("--ipc")
+    flags+=("--keep-privs")
+    local_nonpersistent_flags+=("--keep-privs")
+    flags+=("--net")
+    flags+=("-n")
+    local_nonpersistent_flags+=("--net")
+    flags+=("--network=")
+    two_word_flags+=("--network")
+    local_nonpersistent_flags+=("--network=")
+    flags+=("--network-args=")
+    two_word_flags+=("--network-args")
+    local_nonpersistent_flags+=("--network-args=")
+    flags+=("--no-home")
+    local_nonpersistent_flags+=("--no-home")
+    flags+=("--no-init")
+    local_nonpersistent_flags+=("--no-init")
+    flags+=("--no-nv")
+    local_nonpersistent_flags+=("--no-nv")
+    flags+=("--no-privs")
+    local_nonpersistent_flags+=("--no-privs")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+    flags+=("--nv")
+    local_nonpersistent_flags+=("--nv")
+    flags+=("--overlay=")
+    two_word_flags+=("--overlay")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--overlay=")
+    flags+=("--pid")
+    flags+=("-p")
+    local_nonpersistent_flags+=("--pid")
+    flags+=("--scratch=")
+    two_word_flags+=("--scratch")
+    two_word_flags+=("-S")
+    local_nonpersistent_flags+=("--scratch=")
+    flags+=("--security=")
+    two_word_flags+=("--security")
+    local_nonpersistent_flags+=("--security=")
+    flags+=("--userns")
+    flags+=("-u")
+    local_nonpersistent_flags+=("--userns")
+    flags+=("--uts")
+    local_nonpersistent_flags+=("--uts")
+    flags+=("--workdir=")
+    two_word_flags+=("--workdir")
+    two_word_flags+=("-W")
+    local_nonpersistent_flags+=("--workdir=")
+    flags+=("--writable")
+    flags+=("-w")
+    local_nonpersistent_flags+=("--writable")
+    flags+=("--writable-tmpfs")
+    local_nonpersistent_flags+=("--writable-tmpfs")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_instance_stop()
+{
+    last_command="singularity_instance_stop"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--all")
+    flags+=("-a")
+    local_nonpersistent_flags+=("--all")
+    flags+=("--force")
+    flags+=("-F")
+    local_nonpersistent_flags+=("--force")
+    flags+=("--signal=")
+    two_word_flags+=("--signal")
+    two_word_flags+=("-s")
+    local_nonpersistent_flags+=("--signal=")
+    flags+=("--timeout=")
+    two_word_flags+=("--timeout")
+    two_word_flags+=("-t")
+    local_nonpersistent_flags+=("--timeout=")
+    flags+=("--user=")
+    two_word_flags+=("--user")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--user=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_instance()
+{
+    last_command="singularity_instance"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("list")
+    commands+=("start")
+    commands+=("stop")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_export()
+{
+    last_command="singularity_key_export"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--armor")
+    flags+=("-a")
+    local_nonpersistent_flags+=("--armor")
+    flags+=("--secret")
+    flags+=("-s")
+    local_nonpersistent_flags+=("--secret")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_import()
+{
+    last_command="singularity_key_import"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_list()
+{
+    last_command="singularity_key_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--secret")
+    flags+=("-s")
+    local_nonpersistent_flags+=("--secret")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_newpair()
+{
+    last_command="singularity_key_newpair"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_pull()
+{
+    last_command="singularity_key_pull"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--url=")
+    two_word_flags+=("--url")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--url=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_push()
+{
+    last_command="singularity_key_push"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--url=")
+    two_word_flags+=("--url")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--url=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_remove()
+{
+    last_command="singularity_key_remove"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key_search()
+{
+    last_command="singularity_key_search"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--url=")
+    two_word_flags+=("--url")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--url=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_key()
+{
+    last_command="singularity_key"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("export")
+    commands+=("import")
+    commands+=("list")
+    commands+=("newpair")
+    commands+=("pull")
+    commands+=("push")
+    commands+=("remove")
+    commands+=("search")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_attach()
+{
+    last_command="singularity_oci_attach"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_create()
+{
+    last_command="singularity_oci_create"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--bundle=")
+    two_word_flags+=("--bundle")
+    two_word_flags+=("-b")
+    local_nonpersistent_flags+=("--bundle=")
+    flags+=("--empty-process")
+    local_nonpersistent_flags+=("--empty-process")
+    flags+=("--log-format=")
+    two_word_flags+=("--log-format")
+    local_nonpersistent_flags+=("--log-format=")
+    flags+=("--log-path=")
+    two_word_flags+=("--log-path")
+    two_word_flags+=("-l")
+    local_nonpersistent_flags+=("--log-path=")
+    flags+=("--pid-file=")
+    two_word_flags+=("--pid-file")
+    local_nonpersistent_flags+=("--pid-file=")
+    flags+=("--sync-socket=")
+    two_word_flags+=("--sync-socket")
+    two_word_flags+=("-s")
+    local_nonpersistent_flags+=("--sync-socket=")
+
+    must_have_one_flag=()
+    must_have_one_flag+=("--bundle=")
+    must_have_one_flag+=("-b")
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_delete()
+{
+    last_command="singularity_oci_delete"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_exec()
+{
+    last_command="singularity_oci_exec"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_kill()
+{
+    last_command="singularity_oci_kill"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--force")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--force")
+    flags+=("--signal=")
+    two_word_flags+=("--signal")
+    two_word_flags+=("-s")
+    local_nonpersistent_flags+=("--signal=")
+    flags+=("--timeout=")
+    two_word_flags+=("--timeout")
+    two_word_flags+=("-t")
+    local_nonpersistent_flags+=("--timeout=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_mount()
+{
+    last_command="singularity_oci_mount"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_pause()
+{
+    last_command="singularity_oci_pause"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_resume()
+{
+    last_command="singularity_oci_resume"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_run()
+{
+    last_command="singularity_oci_run"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--bundle=")
+    two_word_flags+=("--bundle")
+    two_word_flags+=("-b")
+    local_nonpersistent_flags+=("--bundle=")
+    flags+=("--log-format=")
+    two_word_flags+=("--log-format")
+    local_nonpersistent_flags+=("--log-format=")
+    flags+=("--log-path=")
+    two_word_flags+=("--log-path")
+    two_word_flags+=("-l")
+    local_nonpersistent_flags+=("--log-path=")
+    flags+=("--pid-file=")
+    two_word_flags+=("--pid-file")
+    local_nonpersistent_flags+=("--pid-file=")
+    flags+=("--sync-socket=")
+    two_word_flags+=("--sync-socket")
+    two_word_flags+=("-s")
+    local_nonpersistent_flags+=("--sync-socket=")
+
+    must_have_one_flag=()
+    must_have_one_flag+=("--bundle=")
+    must_have_one_flag+=("-b")
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_start()
+{
+    last_command="singularity_oci_start"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_state()
+{
+    last_command="singularity_oci_state"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--sync-socket=")
+    two_word_flags+=("--sync-socket")
+    two_word_flags+=("-s")
+    local_nonpersistent_flags+=("--sync-socket=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_umount()
+{
+    last_command="singularity_oci_umount"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci_update()
+{
+    last_command="singularity_oci_update"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--from-file=")
+    two_word_flags+=("--from-file")
+    two_word_flags+=("-f")
+    local_nonpersistent_flags+=("--from-file=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_oci()
+{
+    last_command="singularity_oci"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("attach")
+    commands+=("create")
+    commands+=("delete")
+    commands+=("exec")
+    commands+=("kill")
+    commands+=("mount")
+    commands+=("pause")
+    commands+=("resume")
+    commands+=("run")
+    commands+=("start")
+    commands+=("state")
+    commands+=("umount")
+    commands+=("update")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_compile()
+{
+    last_command="singularity_plugin_compile"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--out=")
+    two_word_flags+=("--out")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--out=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_disable()
+{
+    last_command="singularity_plugin_disable"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_enable()
+{
+    last_command="singularity_plugin_enable"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_inspect()
+{
+    last_command="singularity_plugin_inspect"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_install()
+{
+    last_command="singularity_plugin_install"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--name=")
+    two_word_flags+=("--name")
+    two_word_flags+=("-n")
+    local_nonpersistent_flags+=("--name=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_list()
+{
+    last_command="singularity_plugin_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin_uninstall()
+{
+    last_command="singularity_plugin_uninstall"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_plugin()
+{
+    last_command="singularity_plugin"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("compile")
+    commands+=("disable")
+    commands+=("enable")
+    commands+=("inspect")
+    commands+=("install")
+    commands+=("list")
+    commands+=("uninstall")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_pull()
+{
+    last_command="singularity_pull"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--allow-unsigned")
+    flags+=("-U")
+    local_nonpersistent_flags+=("--allow-unsigned")
+    flags+=("--dir=")
+    two_word_flags+=("--dir")
+    local_nonpersistent_flags+=("--dir=")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--force")
+    flags+=("-F")
+    local_nonpersistent_flags+=("--force")
+    flags+=("--library=")
+    two_word_flags+=("--library")
+    local_nonpersistent_flags+=("--library=")
+    flags+=("--no-cleanup")
+    local_nonpersistent_flags+=("--no-cleanup")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_push()
+{
+    last_command="singularity_push"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--allow-unsigned")
+    flags+=("-U")
+    local_nonpersistent_flags+=("--allow-unsigned")
+    flags+=("--library=")
+    two_word_flags+=("--library")
+    local_nonpersistent_flags+=("--library=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote_add()
+{
+    last_command="singularity_remote_add"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--global")
+    flags+=("-g")
+    local_nonpersistent_flags+=("--global")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote_list()
+{
+    last_command="singularity_remote_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote_login()
+{
+    last_command="singularity_remote_login"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--tokenfile=")
+    two_word_flags+=("--tokenfile")
+    local_nonpersistent_flags+=("--tokenfile=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote_remove()
+{
+    last_command="singularity_remote_remove"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--global")
+    flags+=("-g")
+    local_nonpersistent_flags+=("--global")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote_status()
+{
+    last_command="singularity_remote_status"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote_use()
+{
+    last_command="singularity_remote_use"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--global")
+    flags+=("-g")
+    local_nonpersistent_flags+=("--global")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_remote()
+{
+    last_command="singularity_remote"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("add")
+    commands+=("list")
+    commands+=("login")
+    commands+=("remove")
+    commands+=("status")
+    commands+=("use")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--config=")
+    two_word_flags+=("--config")
+    two_word_flags+=("-c")
+    local_nonpersistent_flags+=("--config=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_run()
+{
+    last_command="singularity_run"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--add-caps=")
+    two_word_flags+=("--add-caps")
+    local_nonpersistent_flags+=("--add-caps=")
+    flags+=("--allow-setuid")
+    local_nonpersistent_flags+=("--allow-setuid")
+    flags+=("--app=")
+    two_word_flags+=("--app")
+    local_nonpersistent_flags+=("--app=")
+    flags+=("--apply-cgroups=")
+    two_word_flags+=("--apply-cgroups")
+    local_nonpersistent_flags+=("--apply-cgroups=")
+    flags+=("--bind=")
+    two_word_flags+=("--bind")
+    two_word_flags+=("-B")
+    local_nonpersistent_flags+=("--bind=")
+    flags+=("--cleanenv")
+    flags+=("-e")
+    local_nonpersistent_flags+=("--cleanenv")
+    flags+=("--contain")
+    flags+=("-c")
+    local_nonpersistent_flags+=("--contain")
+    flags+=("--containall")
+    flags+=("-C")
+    local_nonpersistent_flags+=("--containall")
+    flags+=("--dns=")
+    two_word_flags+=("--dns")
+    local_nonpersistent_flags+=("--dns=")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--drop-caps=")
+    two_word_flags+=("--drop-caps")
+    local_nonpersistent_flags+=("--drop-caps=")
+    flags+=("--fakeroot")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--fakeroot")
+    flags+=("--home=")
+    two_word_flags+=("--home")
+    two_word_flags+=("-H")
+    local_nonpersistent_flags+=("--home=")
+    flags+=("--hostname=")
+    two_word_flags+=("--hostname")
+    local_nonpersistent_flags+=("--hostname=")
+    flags+=("--ipc")
+    flags+=("-i")
+    local_nonpersistent_flags+=("--ipc")
+    flags+=("--keep-privs")
+    local_nonpersistent_flags+=("--keep-privs")
+    flags+=("--net")
+    flags+=("-n")
+    local_nonpersistent_flags+=("--net")
+    flags+=("--network=")
+    two_word_flags+=("--network")
+    local_nonpersistent_flags+=("--network=")
+    flags+=("--network-args=")
+    two_word_flags+=("--network-args")
+    local_nonpersistent_flags+=("--network-args=")
+    flags+=("--no-home")
+    local_nonpersistent_flags+=("--no-home")
+    flags+=("--no-init")
+    local_nonpersistent_flags+=("--no-init")
+    flags+=("--no-nv")
+    local_nonpersistent_flags+=("--no-nv")
+    flags+=("--no-privs")
+    local_nonpersistent_flags+=("--no-privs")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+    flags+=("--nv")
+    local_nonpersistent_flags+=("--nv")
+    flags+=("--overlay=")
+    two_word_flags+=("--overlay")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--overlay=")
+    flags+=("--pid")
+    flags+=("-p")
+    local_nonpersistent_flags+=("--pid")
+    flags+=("--pwd=")
+    two_word_flags+=("--pwd")
+    local_nonpersistent_flags+=("--pwd=")
+    flags+=("--scratch=")
+    two_word_flags+=("--scratch")
+    two_word_flags+=("-S")
+    local_nonpersistent_flags+=("--scratch=")
+    flags+=("--security=")
+    two_word_flags+=("--security")
+    local_nonpersistent_flags+=("--security=")
+    flags+=("--userns")
+    flags+=("-u")
+    local_nonpersistent_flags+=("--userns")
+    flags+=("--uts")
+    local_nonpersistent_flags+=("--uts")
+    flags+=("--vm")
+    local_nonpersistent_flags+=("--vm")
+    flags+=("--vm-cpu=")
+    two_word_flags+=("--vm-cpu")
+    local_nonpersistent_flags+=("--vm-cpu=")
+    flags+=("--vm-err")
+    local_nonpersistent_flags+=("--vm-err")
+    flags+=("--vm-ram=")
+    two_word_flags+=("--vm-ram")
+    local_nonpersistent_flags+=("--vm-ram=")
+    flags+=("--workdir=")
+    two_word_flags+=("--workdir")
+    two_word_flags+=("-W")
+    local_nonpersistent_flags+=("--workdir=")
+    flags+=("--writable")
+    flags+=("-w")
+    local_nonpersistent_flags+=("--writable")
+    flags+=("--writable-tmpfs")
+    local_nonpersistent_flags+=("--writable-tmpfs")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_run-help()
+{
+    last_command="singularity_run-help"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--app=")
+    two_word_flags+=("--app")
+    local_nonpersistent_flags+=("--app=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_search()
+{
+    last_command="singularity_search"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--library=")
+    two_word_flags+=("--library")
+    local_nonpersistent_flags+=("--library=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_shell()
+{
+    last_command="singularity_shell"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--add-caps=")
+    two_word_flags+=("--add-caps")
+    local_nonpersistent_flags+=("--add-caps=")
+    flags+=("--allow-setuid")
+    local_nonpersistent_flags+=("--allow-setuid")
+    flags+=("--app=")
+    two_word_flags+=("--app")
+    local_nonpersistent_flags+=("--app=")
+    flags+=("--apply-cgroups=")
+    two_word_flags+=("--apply-cgroups")
+    local_nonpersistent_flags+=("--apply-cgroups=")
+    flags+=("--bind=")
+    two_word_flags+=("--bind")
+    two_word_flags+=("-B")
+    local_nonpersistent_flags+=("--bind=")
+    flags+=("--cleanenv")
+    flags+=("-e")
+    local_nonpersistent_flags+=("--cleanenv")
+    flags+=("--contain")
+    flags+=("-c")
+    local_nonpersistent_flags+=("--contain")
+    flags+=("--containall")
+    flags+=("-C")
+    local_nonpersistent_flags+=("--containall")
+    flags+=("--dns=")
+    two_word_flags+=("--dns")
+    local_nonpersistent_flags+=("--dns=")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--drop-caps=")
+    two_word_flags+=("--drop-caps")
+    local_nonpersistent_flags+=("--drop-caps=")
+    flags+=("--fakeroot")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--fakeroot")
+    flags+=("--home=")
+    two_word_flags+=("--home")
+    two_word_flags+=("-H")
+    local_nonpersistent_flags+=("--home=")
+    flags+=("--hostname=")
+    two_word_flags+=("--hostname")
+    local_nonpersistent_flags+=("--hostname=")
+    flags+=("--ipc")
+    flags+=("-i")
+    local_nonpersistent_flags+=("--ipc")
+    flags+=("--keep-privs")
+    local_nonpersistent_flags+=("--keep-privs")
+    flags+=("--net")
+    flags+=("-n")
+    local_nonpersistent_flags+=("--net")
+    flags+=("--network=")
+    two_word_flags+=("--network")
+    local_nonpersistent_flags+=("--network=")
+    flags+=("--network-args=")
+    two_word_flags+=("--network-args")
+    local_nonpersistent_flags+=("--network-args=")
+    flags+=("--no-home")
+    local_nonpersistent_flags+=("--no-home")
+    flags+=("--no-init")
+    local_nonpersistent_flags+=("--no-init")
+    flags+=("--no-nv")
+    local_nonpersistent_flags+=("--no-nv")
+    flags+=("--no-privs")
+    local_nonpersistent_flags+=("--no-privs")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+    flags+=("--nv")
+    local_nonpersistent_flags+=("--nv")
+    flags+=("--overlay=")
+    two_word_flags+=("--overlay")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--overlay=")
+    flags+=("--pid")
+    flags+=("-p")
+    local_nonpersistent_flags+=("--pid")
+    flags+=("--pwd=")
+    two_word_flags+=("--pwd")
+    local_nonpersistent_flags+=("--pwd=")
+    flags+=("--scratch=")
+    two_word_flags+=("--scratch")
+    two_word_flags+=("-S")
+    local_nonpersistent_flags+=("--scratch=")
+    flags+=("--security=")
+    two_word_flags+=("--security")
+    local_nonpersistent_flags+=("--security=")
+    flags+=("--shell=")
+    two_word_flags+=("--shell")
+    two_word_flags+=("-s")
+    local_nonpersistent_flags+=("--shell=")
+    flags+=("--syos")
+    local_nonpersistent_flags+=("--syos")
+    flags+=("--userns")
+    flags+=("-u")
+    local_nonpersistent_flags+=("--userns")
+    flags+=("--uts")
+    local_nonpersistent_flags+=("--uts")
+    flags+=("--vm")
+    local_nonpersistent_flags+=("--vm")
+    flags+=("--vm-cpu=")
+    two_word_flags+=("--vm-cpu")
+    local_nonpersistent_flags+=("--vm-cpu=")
+    flags+=("--vm-err")
+    local_nonpersistent_flags+=("--vm-err")
+    flags+=("--vm-ram=")
+    two_word_flags+=("--vm-ram")
+    local_nonpersistent_flags+=("--vm-ram=")
+    flags+=("--workdir=")
+    two_word_flags+=("--workdir")
+    two_word_flags+=("-W")
+    local_nonpersistent_flags+=("--workdir=")
+    flags+=("--writable")
+    flags+=("-w")
+    local_nonpersistent_flags+=("--writable")
+    flags+=("--writable-tmpfs")
+    local_nonpersistent_flags+=("--writable-tmpfs")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_add()
+{
+    last_command="singularity_sif_add"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--alignment=")
+    two_word_flags+=("--alignment")
+    local_nonpersistent_flags+=("--alignment=")
+    flags+=("--datatype=")
+    two_word_flags+=("--datatype")
+    local_nonpersistent_flags+=("--datatype=")
+    flags+=("--filename=")
+    two_word_flags+=("--filename")
+    local_nonpersistent_flags+=("--filename=")
+    flags+=("--groupid=")
+    two_word_flags+=("--groupid")
+    local_nonpersistent_flags+=("--groupid=")
+    flags+=("--link=")
+    two_word_flags+=("--link")
+    local_nonpersistent_flags+=("--link=")
+    flags+=("--partarch=")
+    two_word_flags+=("--partarch")
+    local_nonpersistent_flags+=("--partarch=")
+    flags+=("--partfs=")
+    two_word_flags+=("--partfs")
+    local_nonpersistent_flags+=("--partfs=")
+    flags+=("--parttype=")
+    two_word_flags+=("--parttype")
+    local_nonpersistent_flags+=("--parttype=")
+    flags+=("--signentity=")
+    two_word_flags+=("--signentity")
+    local_nonpersistent_flags+=("--signentity=")
+    flags+=("--signhash=")
+    two_word_flags+=("--signhash")
+    local_nonpersistent_flags+=("--signhash=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_del()
+{
+    last_command="singularity_sif_del"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_dump()
+{
+    last_command="singularity_sif_dump"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_header()
+{
+    last_command="singularity_sif_header"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_info()
+{
+    last_command="singularity_sif_info"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_list()
+{
+    last_command="singularity_sif_list"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_new()
+{
+    last_command="singularity_sif_new"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif_setprim()
+{
+    last_command="singularity_sif_setprim"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sif()
+{
+    last_command="singularity_sif"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("add")
+    commands+=("del")
+    commands+=("dump")
+    commands+=("header")
+    commands+=("info")
+    commands+=("list")
+    commands+=("new")
+    commands+=("setprim")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_sign()
+{
+    last_command="singularity_sign"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--groupid=")
+    two_word_flags+=("--groupid")
+    two_word_flags+=("-g")
+    local_nonpersistent_flags+=("--groupid=")
+    flags+=("--id=")
+    two_word_flags+=("--id")
+    two_word_flags+=("-i")
+    local_nonpersistent_flags+=("--id=")
+    flags+=("--keyidx=")
+    two_word_flags+=("--keyidx")
+    two_word_flags+=("-k")
+    local_nonpersistent_flags+=("--keyidx=")
+    flags+=("--url=")
+    two_word_flags+=("--url")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--url=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_test()
+{
+    last_command="singularity_test"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--add-caps=")
+    two_word_flags+=("--add-caps")
+    local_nonpersistent_flags+=("--add-caps=")
+    flags+=("--allow-setuid")
+    local_nonpersistent_flags+=("--allow-setuid")
+    flags+=("--app=")
+    two_word_flags+=("--app")
+    local_nonpersistent_flags+=("--app=")
+    flags+=("--apply-cgroups=")
+    two_word_flags+=("--apply-cgroups")
+    local_nonpersistent_flags+=("--apply-cgroups=")
+    flags+=("--bind=")
+    two_word_flags+=("--bind")
+    two_word_flags+=("-B")
+    local_nonpersistent_flags+=("--bind=")
+    flags+=("--cleanenv")
+    flags+=("-e")
+    local_nonpersistent_flags+=("--cleanenv")
+    flags+=("--contain")
+    flags+=("-c")
+    local_nonpersistent_flags+=("--contain")
+    flags+=("--containall")
+    flags+=("-C")
+    local_nonpersistent_flags+=("--containall")
+    flags+=("--dns=")
+    two_word_flags+=("--dns")
+    local_nonpersistent_flags+=("--dns=")
+    flags+=("--docker-login")
+    local_nonpersistent_flags+=("--docker-login")
+    flags+=("--drop-caps=")
+    two_word_flags+=("--drop-caps")
+    local_nonpersistent_flags+=("--drop-caps=")
+    flags+=("--fakeroot")
+    flags+=("-f")
+    local_nonpersistent_flags+=("--fakeroot")
+    flags+=("--home=")
+    two_word_flags+=("--home")
+    two_word_flags+=("-H")
+    local_nonpersistent_flags+=("--home=")
+    flags+=("--hostname=")
+    two_word_flags+=("--hostname")
+    local_nonpersistent_flags+=("--hostname=")
+    flags+=("--ipc")
+    flags+=("-i")
+    local_nonpersistent_flags+=("--ipc")
+    flags+=("--keep-privs")
+    local_nonpersistent_flags+=("--keep-privs")
+    flags+=("--net")
+    flags+=("-n")
+    local_nonpersistent_flags+=("--net")
+    flags+=("--network=")
+    two_word_flags+=("--network")
+    local_nonpersistent_flags+=("--network=")
+    flags+=("--network-args=")
+    two_word_flags+=("--network-args")
+    local_nonpersistent_flags+=("--network-args=")
+    flags+=("--no-home")
+    local_nonpersistent_flags+=("--no-home")
+    flags+=("--no-init")
+    local_nonpersistent_flags+=("--no-init")
+    flags+=("--no-nv")
+    local_nonpersistent_flags+=("--no-nv")
+    flags+=("--no-privs")
+    local_nonpersistent_flags+=("--no-privs")
+    flags+=("--nohttps")
+    local_nonpersistent_flags+=("--nohttps")
+    flags+=("--nv")
+    local_nonpersistent_flags+=("--nv")
+    flags+=("--overlay=")
+    two_word_flags+=("--overlay")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--overlay=")
+    flags+=("--pid")
+    flags+=("-p")
+    local_nonpersistent_flags+=("--pid")
+    flags+=("--pwd=")
+    two_word_flags+=("--pwd")
+    local_nonpersistent_flags+=("--pwd=")
+    flags+=("--scratch=")
+    two_word_flags+=("--scratch")
+    two_word_flags+=("-S")
+    local_nonpersistent_flags+=("--scratch=")
+    flags+=("--security=")
+    two_word_flags+=("--security")
+    local_nonpersistent_flags+=("--security=")
+    flags+=("--userns")
+    flags+=("-u")
+    local_nonpersistent_flags+=("--userns")
+    flags+=("--uts")
+    local_nonpersistent_flags+=("--uts")
+    flags+=("--vm")
+    local_nonpersistent_flags+=("--vm")
+    flags+=("--vm-cpu=")
+    two_word_flags+=("--vm-cpu")
+    local_nonpersistent_flags+=("--vm-cpu=")
+    flags+=("--vm-err")
+    local_nonpersistent_flags+=("--vm-err")
+    flags+=("--vm-ram=")
+    two_word_flags+=("--vm-ram")
+    local_nonpersistent_flags+=("--vm-ram=")
+    flags+=("--workdir=")
+    two_word_flags+=("--workdir")
+    two_word_flags+=("-W")
+    local_nonpersistent_flags+=("--workdir=")
+    flags+=("--writable")
+    flags+=("-w")
+    local_nonpersistent_flags+=("--writable")
+    flags+=("--writable-tmpfs")
+    local_nonpersistent_flags+=("--writable-tmpfs")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_verify()
+{
+    last_command="singularity_verify"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--groupid=")
+    two_word_flags+=("--groupid")
+    two_word_flags+=("-g")
+    local_nonpersistent_flags+=("--groupid=")
+    flags+=("--id=")
+    two_word_flags+=("--id")
+    two_word_flags+=("-i")
+    local_nonpersistent_flags+=("--id=")
+    flags+=("--local")
+    flags+=("-l")
+    local_nonpersistent_flags+=("--local")
+    flags+=("--url=")
+    two_word_flags+=("--url")
+    two_word_flags+=("-u")
+    local_nonpersistent_flags+=("--url=")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_version()
+{
+    last_command="singularity_version"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+_singularity_root_command()
+{
+    last_command="singularity"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("build")
+    commands+=("cache")
+    commands+=("capability")
+    if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+        command_aliases+=("caps")
+        aliashash["caps"]="capability"
+    fi
+    commands+=("exec")
+    commands+=("inspect")
+    commands+=("instance")
+    commands+=("key")
+    if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+        command_aliases+=("keys")
+        aliashash["keys"]="key"
+    fi
+    commands+=("oci")
+    commands+=("plugin")
+    if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+        command_aliases+=("plugins")
+        aliashash["plugins"]="plugin"
+    fi
+    commands+=("pull")
+    commands+=("push")
+    commands+=("remote")
+    commands+=("run")
+    commands+=("run-help")
+    commands+=("search")
+    commands+=("shell")
+    commands+=("sif")
+    if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+        command_aliases+=("siftool")
+        aliashash["siftool"]="sif"
+    fi
+    commands+=("sign")
+    commands+=("test")
+    commands+=("verify")
+    commands+=("version")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--debug")
+    flags+=("-d")
+    local_nonpersistent_flags+=("--debug")
+    flags+=("--nocolor")
+    local_nonpersistent_flags+=("--nocolor")
+    flags+=("--quiet")
+    flags+=("-q")
+    local_nonpersistent_flags+=("--quiet")
+    flags+=("--silent")
+    flags+=("-s")
+    local_nonpersistent_flags+=("--silent")
+    flags+=("--verbose")
+    flags+=("-v")
+    local_nonpersistent_flags+=("--verbose")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
+__start_singularity()
+{
+    local cur prev words cword
+    declare -A flaghash 2>/dev/null || :
+    declare -A aliashash 2>/dev/null || :
+    if declare -F _init_completion >/dev/null 2>&1; then
+        _init_completion -s || return
+    else
+        __singularity_init_completion -n "=" || return
+    fi
+
+    local c=0
+    local flags=()
+    local two_word_flags=()
+    local local_nonpersistent_flags=()
+    local flags_with_completion=()
+    local flags_completion=()
+    local commands=("singularity")
+    local must_have_one_flag=()
+    local must_have_one_noun=()
+    local last_command
+    local nouns=()
+
+    __singularity_handle_word
+}
+
+if [[ $(type -t compopt) = "builtin" ]]; then
+    complete -o default -F __start_singularity singularity
+else
+    complete -o default -o nospace -F __start_singularity singularity
+fi
+
+# ex: ts=4 sw=4 et filetype=sh
