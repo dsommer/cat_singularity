@@ -1,7 +1,0 @@
-name: singularity-tutorial
-channels:
-  - conda-forge
-dependencies:
-  - singularity=3.0.1
-  - biopython
-  - ipython
