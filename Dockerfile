@@ -27,5 +27,5 @@ RUN export VERSION=3.4.0 && \
 RUN ./mconfig && \
     make -C ./builddir
 USER root
-    make -C ./builddir install
+RUN make -C ./builddir install
 USER ${NB_USER}
