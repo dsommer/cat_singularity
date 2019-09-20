@@ -44,4 +44,6 @@ USER root
 RUN make -C ./builddir install
 USER ${NB_USER}
 WORKDIR ${HOME}
+RUN mkdir .singularity
+COPY synlabs synlabs-token
 

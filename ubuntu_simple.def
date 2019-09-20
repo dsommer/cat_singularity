@@ -1,0 +1,8 @@
+bootstrap: library
+From: ubuntu:18.04
+
+%labels
+	Author dsommer
+
+
+	
