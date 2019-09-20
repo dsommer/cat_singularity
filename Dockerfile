@@ -21,7 +21,8 @@ RUN apt-get update && apt-get install -y \
     wget \
     pkg-config \
     git \
-    cryptsetup-bin
+    cryptsetup-bin \
+    vim
     
 RUN export VERSION=1.12 OS=linux ARCH=amd64 && \
     wget https://dl.google.com/go/go$VERSION.$OS-$ARCH.tar.gz && \
