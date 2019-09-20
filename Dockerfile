@@ -34,7 +34,7 @@ ENV GOPATH=${HOME}/go
 ENV PATH=/usr/local/go/bin:${PATH}:${GOPATH}/bin
 RUN export VERSION=3.4.0 && \
     wget https://github.com/sylabs/singularity/releases/download/v${VERSION}/singularity-${VERSION}.tar.gz && \
-    tar -xzf singularity-${VERSION}.tar.gz &&
+    tar -xzf singularity-${VERSION}.tar.gz && \
     rm singularity-${VERSION}.tar.gz
     
 WORKDIR singularity
