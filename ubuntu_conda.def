@@ -33,7 +33,7 @@ From: ubuntu:18.04
     This is a demo container that runs seqtk to filter sequences.fasta
     
 #%runscript
-    # edit to print message and run seqtk
+    # edit to print message and run seqtk to reverse complement fasta file
 
 
 %labels

@@ -19,6 +19,7 @@ From: ubuntu:18.04
     conda update -n base conda
 
     # edit here to install seqtk
+    conda install -c bioconda seqtk
     
     
 %environment
@@ -31,9 +32,10 @@ From: ubuntu:18.04
 %help
     This is a demo container that runs seqtk to filter sequences.fasta
     
-#%runscript
-    # edit to print message and run seqtk
-
+%runscript
+    # edit to print message and run seqtk to reverse complement fasta file
+    echo $MESSAGE
+    seqtk seq -r $*
 
 %labels
 	Author dsommer
