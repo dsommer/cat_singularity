@@ -1,9 +1,7 @@
 bootstrap: library
 From: ubuntu:18.04
 
-%files
-    # add copy sequence files here
-    sequences.fasta sequences.fasta
+
 %post
     # install some system deps
     apt-get -y update
