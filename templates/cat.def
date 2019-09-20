@@ -1,12 +1,14 @@
 bootstrap: library
 From: ubuntu:18.04
 
+%files
+	sequences.fasta sequences.fasta
+
 %post
-	apt-get -y update
-	apt-get -y install aptitude
+	apt-get update && apt-get -y install emacs
 
 %environment
-	export LC_ALL=C
+	export MAX_SEQS=10
 
 %runscript
 
