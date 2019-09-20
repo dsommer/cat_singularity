@@ -1,6 +1,8 @@
 bootstrap: library
 From: ubuntu:18.04
 
+#%files
+    # add copy sequence files here
 
 %post
     # install some system deps
@@ -16,7 +18,7 @@ From: ubuntu:18.04
     export PATH=/opt/miniconda3/bin:$PATH
     conda update -n base conda
 
-    # edit here
+    # edit here to install seqtk
     
     
     
@@ -25,8 +27,10 @@ From: ubuntu:18.04
     export LANGUAGE=en_US:en
     export LC_ALL=en_US.UTF-8
     export PATH=/opt/miniconda3/bin:$PATH
+    export MESSAGE="Running SEQTK" 
 
-
+#%runscript
+    # edit to print message and run seqtk
 
 
 %labels
