@@ -3,6 +3,8 @@ FROM jupyter/minimal-notebook:1386e2046833
 USER root
 # Make sure the contents of our repo are in ${HOME}
 COPY . ${HOME}
+RUN mkdir .singularity
+COPY sylabs .singularity/sylabs-token
 RUN chown -R ${NB_UID} ${HOME}
 
 # install singularity
@@ -44,6 +46,5 @@ USER root
 RUN make -C ./builddir install
 USER ${NB_USER}
 WORKDIR ${HOME}
-RUN mkdir .singularity
-COPY sylabs synlabs-token
+
 
