@@ -5,17 +5,17 @@ From: ubuntu:18.04
 %post
     # install some system deps
     apt-get -y update
-    apt-get -y install locales curl bzip2 xz-utils
+    apt-get -y install locales bzip2 xz-utils
     locale-gen en_US.UTF-8
     apt-get clean
 
     # download and install miniconda3
-    curl -sSL -O https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
-    bash Miniconda3-latest-Linux-x86_64.sh -p /opt/conda -b
-    rm -fr Miniconda3-latest-Linux-x86_64.sh
-    export PATH=/opt/conda/bin:$PATH
-    conda update -n base conda
-    conda install -c anaconda setuptools
+    #    curl -sSL -O https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    #	 bash Miniconda3-latest-Linux-x86_64.sh -p /opt/conda -b
+    #	 rm -fr Miniconda3-latest-Linux-x86_64.sh
+    #    export PATH=/opt/conda/bin:$PATH
+    #    conda update -n base conda
+    #    conda install -c anaconda setuptools
 
 %environment
     export LANG=en_US.UTF-8
@@ -24,7 +24,7 @@ From: ubuntu:18.04
     export PATH=/opt/bin:/opt/conda/bin:$PATH
     
 %help
-    This is a minimal ubuntu container with Miniconda, setuptools, bzip2, and xz.
+    This is a minimal ubuntu container with bzip2, and xz.
     
 %labels
 	Author dsommer
