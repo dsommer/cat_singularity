@@ -1,0 +1,24 @@
+bootstrap: localimage
+From: ubuntu_18.04_miniconda.sif
+
+%files
+    packages.txt
+    environment.yml
+
+%post
+    # install all apt packages from packages.txt
+    xargs apt-get install -y < packages.txt
+	
+    # install all conda packages in environment.yml
+    export PATH=/opt/conda/bin:$PATH
+    conda env create -f environment.yml
+
+
+%help
+    The is the template container
+    
+%runscript
+
+
+%labels
+	Author dsommer
